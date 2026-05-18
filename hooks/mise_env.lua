@@ -51,6 +51,12 @@ local function find_git_root()
             f:close()
             return current_dir
         end
+
+        local git_file = read_file(git_dir)
+        if git_file and git_file:match("^gitdir:%s*[^%s]") then
+            return current_dir
+        end
+
         current_dir = current_dir .. "/.."
     end
     return nil
