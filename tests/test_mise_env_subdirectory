@@ -127,4 +127,70 @@ else
 fi
 
 echo ""
+echo "=== Subdirectory tests passed! ==="
+
+echo ""
+echo "Testing from linked worktree nested under parent checkout..."
+WORKTREE_PARENT="$TEST_DIR/parent-checkout"
+WORKTREE_DIR="$WORKTREE_PARENT/.worktrees/support-worktrees"
+
+mkdir -p "$WORKTREE_PARENT/provider"
+cd "$WORKTREE_PARENT"
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+
+cat > provider/go.mod <<'EOF'
+module github.com/pulumi/pulumi-test
+
+go 1.21.0
+
+require (
+	github.com/pulumi/pulumi/pkg/v3 v3.130.0
+)
+EOF
+
+mkdir -p .config
+cat > .config/mise.toml <<'EOF'
+[env]
+_.vfox-pulumi = { module_path = "provider" }
+
+[tools]
+go = "{{ env.GO_VERSION_MISE }}"
+EOF
+
+git add .
+git commit -q -m "init"
+git worktree add -q -b support-worktrees "$WORKTREE_DIR"
+
+cat > "$WORKTREE_DIR/provider/go.mod" <<'EOF'
+module github.com/pulumi/pulumi-test
+
+go 1.24.1
+
+require (
+	github.com/pulumi/pulumi/pkg/v3 v3.160.0
+)
+EOF
+
+cd "$WORKTREE_DIR/provider"
+OUTPUT=$(mise env -s bash 2>&1 || true)
+
+if echo "$OUTPUT" | grep -q 'GO_VERSION_MISE=.*1.24.1'; then
+    echo "✓ From linked worktree: GO_VERSION_MISE=1.24.1"
+else
+    echo "✗ From linked worktree: expected GO_VERSION_MISE=1.24.1"
+    echo "Output: $OUTPUT"
+    exit 1
+fi
+
+if echo "$OUTPUT" | grep -q 'PULUMI_VERSION_MISE=.*3.160.0'; then
+    echo "✓ From linked worktree: PULUMI_VERSION_MISE=3.160.0"
+else
+    echo "✗ From linked worktree: expected PULUMI_VERSION_MISE=3.160.0"
+    echo "Output: $OUTPUT"
+    exit 1
+fi
+
+echo ""
 echo "=== All tests passed! ==="
