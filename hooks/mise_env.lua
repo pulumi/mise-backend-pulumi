@@ -10,15 +10,22 @@ local function read_file(path)
     return content
 end
 
-local function extract_pulumi_version(content, module_path)
-    -- Look for lines containing the module path
-    for line in content:gmatch("[^\r\n]+") do
-        if line:find(module_path, 1, true) then
-            -- Extract version starting with 'v' followed by digits
-            -- Match the version after the module path
-            local version = line:match(module_path .. "%s+v([0-9]+%.[0-9]+%.[0-9]+)")
-            if version then
-                return version
+local function extract_pulumi_version(content, module_paths)
+    -- Look for lines containing one of the candidate module paths, in
+    -- priority order. This allows falling back to a related module when
+    -- the preferred one isn't present (e.g. some go.mod files only
+    -- require github.com/pulumi/pulumi/sdk/v3 directly, since
+    -- github.com/pulumi/pulumi/pkg/v3 depends on it and the two are
+    -- always released in lockstep).
+    for _, module_path in ipairs(module_paths) do
+        for line in content:gmatch("[^\r\n]+") do
+            if line:find(module_path, 1, true) then
+                -- Extract version starting with 'v' followed by digits
+                -- Match the version after the module path
+                local version = line:match(module_path .. "%s+v([0-9]+%.[0-9]+%.[0-9]+)")
+                if version then
+                    return version
+                end
             end
         end
     end
@@ -63,8 +70,15 @@ local function find_git_root()
 end
 
 function PLUGIN:MiseEnv(ctx)
-    -- Parse go.mod to extract version information
-    local module_path = "github.com/pulumi/pulumi/pkg/v3"
+    -- Parse go.mod to extract version information.
+    -- github.com/pulumi/pulumi/pkg/v3 and github.com/pulumi/pulumi/sdk/v3 are
+    -- always released at the same version, so fall back to sdk/v3 if pkg/v3
+    -- isn't a direct requirement in go.mod (e.g. it was pruned by `go mod
+    -- tidy` because it's only used transitively).
+    local module_paths = {
+        "github.com/pulumi/pulumi/pkg/v3",
+        "github.com/pulumi/pulumi/sdk/v3",
+    }
     local go_mod_path = ctx.options.module_path or ""
     local content = nil
 
@@ -88,7 +102,7 @@ function PLUGIN:MiseEnv(ctx)
     end
 
     -- Extract both versions independently
-    local pulumi_version = extract_pulumi_version(content, module_path)
+    local pulumi_version = extract_pulumi_version(content, module_paths)
     local go_version = extract_go_version(content)
 
     -- Build result array with whatever we found
