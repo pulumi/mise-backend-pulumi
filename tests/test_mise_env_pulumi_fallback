@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# E2E test for vfox-pulumi mise_env hook's pulumi/pkg/v3 -> pulumi/sdk/v3 fallback
+#
+# github.com/pulumi/pulumi/pkg/v3 and github.com/pulumi/pulumi/sdk/v3 are
+# always released in lockstep. Some go.mod files only require sdk/v3 directly
+# (e.g. after `go mod tidy` prunes pkg/v3 because it's only used
+# transitively), so PULUMI_VERSION_MISE should still be derived from sdk/v3
+# in that case.
+
+set -euo pipefail
+
+# Get the plugin directory
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+# Trust the test directory
+export MISE_TRUSTED_CONFIG_PATHS="$TEST_DIR"
+
+echo "Setting up test repository in $TEST_DIR"
+
+mkdir -p "$TEST_DIR/provider"
+cd "$TEST_DIR"
+
+# Initialize as git repo (needed for find_git_root)
+git init -q
+git config user.email "test@test.com"
+git config user.name "Test"
+
+# go.mod with only sdk/v3 required directly, no pkg/v3 (mirrors renovate PRs
+# that drop pkg/v3 once it becomes an indirect-only dependency)
+cat > provider/go.mod <<'EOF'
+module github.com/pulumi/pulumi-test/provider
+
+go 1.25.11
+
+require (
+	github.com/pulumi/pulumi-go-helmbase v0.2.0
+	github.com/pulumi/pulumi/sdk/v3 v3.253.0
+)
+EOF
+
+# Uninstall the local plugin for testing
+UNLINK_OUTPUT=$(mise plugin uninstall vfox-pulumi 2>&1 || true)
+echo "Plugin uninstall output: $UNLINK_OUTPUT"
+
+# Link the local plugin for testing
+LINK_OUTPUT=$(mise plugin link --force vfox-pulumi "$PLUGIN_DIR" 2>&1 || true)
+echo "Plugin link output: $LINK_OUTPUT"
+
+mkdir -p .config
+cat > .config/mise.toml <<'EOF'
+[env]
+_.vfox-pulumi = { module_path = "provider" }
+
+[tools]
+go = "{{ env.GO_VERSION_MISE }}"
+EOF
+
+git add .
+git commit -q -m "init"
+
+echo "Testing fallback to sdk/v3 when pkg/v3 is absent from go.mod..."
+OUTPUT=$(mise env -s bash 2>&1 || true)
+
+if echo "$OUTPUT" | grep -q 'PULUMI_VERSION_MISE=.*3.253.0'; then
+    echo "✓ PULUMI_VERSION_MISE fell back to sdk/v3: 3.253.0"
+else
+    echo "✗ PULUMI_VERSION_MISE fallback to sdk/v3 failed (BUG!)"
+    echo "Output: $OUTPUT"
+    exit 1
+fi
+
+if echo "$OUTPUT" | grep -q 'GO_VERSION_MISE=.*1.25.11'; then
+    echo "✓ GO_VERSION_MISE=1.25.11"
+else
+    echo "✗ GO_VERSION_MISE not found (BUG!)"
+    echo "Output: $OUTPUT"
+    exit 1
+fi
+
+echo ""
+echo "Testing that pkg/v3 still takes priority over sdk/v3 when both are present..."
+cat > provider/go.mod <<'EOF'
+module github.com/pulumi/pulumi-test/provider
+
+go 1.25.11
+
+require (
+	github.com/pulumi/pulumi/pkg/v3 v3.253.0
+	github.com/pulumi/pulumi/sdk/v3 v3.253.0
+)
+EOF
+git add .
+git commit -q -m "add pkg/v3"
+
+OUTPUT=$(mise env -s bash 2>&1 || true)
+
+if echo "$OUTPUT" | grep -q 'PULUMI_VERSION_MISE=.*3.253.0'; then
+    echo "✓ PULUMI_VERSION_MISE=3.253.0 (from pkg/v3)"
+else
+    echo "✗ PULUMI_VERSION_MISE not found when pkg/v3 is present (BUG!)"
+    echo "Output: $OUTPUT"
+    exit 1
+fi
+
+echo ""
+echo "=== Fallback tests passed! ==="
